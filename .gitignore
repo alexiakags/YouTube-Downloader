@@ -1,0 +1,33 @@
+# Ambiente Virtual
+.venv/
+venv/
+env/
+
+# Cache e arquivos temporários do Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Artefatos de Build e Empacotamento (PyInstaller)
+build/
+dist/
+*.spec
+*.egg-info/
+
+# Binários pesados do FFmpeg (evita estourar o limite de tamanho do GitHub)
+bin/*.exe
+bin/ffmpeg
+bin/ffprobe
+
+# Logs, configurações locais e mídias de teste
+*.log
+config.json
+*.mp3
+*.mp4
+
+# Arquivos específicos de IDE e Sistema Operacional
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
