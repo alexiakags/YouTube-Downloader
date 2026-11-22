@@ -1,40 +1,46 @@
 import os
 import subprocess
 import sys
-import threading
 import customtkinter as ctk
 from tkinter import filedialog, messagebox
 from PIL import Image, ImageTk
 from utils.config import ConfigManager
 from utils.paths import get_asset_path
-from core.downloader import MediaDownloader, DownloadError
+from core.queue_manager import DownloadQueueManager, QueueItem
 
 # Paletas Duplas: (Modo Claro: Rosa Pastel & Marrom | Modo Escuro: Rosa Escuro & Creme/Dourado)
-BG_MAIN = ("#FDF2F5", "#170B11")          # Fundo geral (Rosa bebê | Vinho/Rosa bem escuro)
-PANEL_BG = ("#F8E1E7", "#26121C")         # Cards/caixas (Rosa pastel | Rosa escuro profundo)
-BORDER_COLOR = ("#6D4C41", "#F48FB1")     # Bordas pixeladas (Marrom café | Rosa chiclete iluminado)
-TEXT_PRIMARY = ("#3E2723", "#FCE4EC")     # Texto principal (Marrom escuro | Branco rosado suave)
-TEXT_MUTED = ("#8D6E63", "#D89BB0")       # Texto secundário (Marrom médio | Rosa antigo)
+BG_MAIN = ("#FDF2F5", "#170B11")
+PANEL_BG = ("#F8E1E7", "#26121C")
+BORDER_COLOR = ("#6D4C41", "#F48FB1")
+TEXT_PRIMARY = ("#3E2723", "#FCE4EC")
+TEXT_MUTED = ("#8D6E63", "#D89BB0")
 
-ACCENT_PRIMARY = ("#F48FB1", "#C71A54")   # Destaque principal (Rosa pastel | Rosa magenta vibrante)
-ACCENT_HOVER = ("#EC407A", "#C2185B")     # Hover principal (Rosa intenso | Rosa escuro profundo)
-BTN_START_TEXT = ("#3E2723", "#FFF8FA")   # Texto do botão Iniciar (Marrom escuro | Branco rosado)
+ACCENT_PRIMARY = ("#F48FB1", "#C71A54")
+ACCENT_HOVER = ("#EC407A", "#C2185B")
+BTN_START_TEXT = ("#3E2723", "#FFF8FA")
 
-ACCENT_SECONDARY = ("#8D6E63", "#F6BD60") # Destaque secundário / Barra (Marrom | Dourado retrô)
-ACCENT_SEC_HOVER = ("#5D4037", "#E0A84B") # Hover secundário
-ERROR_RED = ("#C62828", "#FF6E6E")        # Alerta de erro
+ACCENT_SECONDARY = ("#8D6E63", "#F6BD60")
+ACCENT_SEC_HOVER = ("#5D4037", "#E0A84B")
+SUCCESS_GREEN = ("#2E7D32", "#69F0AE")
+ERROR_RED = ("#C62828", "#FF6E6E")
 
 FONT_TITLE = ("Consolas", 18, "bold")
-FONT_LABEL = ("Consolas", 16, "bold")
-FONT_BODY = ("Consolas", 14)
-FONT_BTN = ("Consolas", 14, "bold")
+FONT_LABEL = ("Consolas", 15, "bold")
+FONT_BODY = ("Consolas", 13)
+FONT_SMALL = ("Consolas", 12)
+FONT_BTN = ("Consolas", 13, "bold")
 
 
 class DownloaderApp:
     def __init__(self, root: ctk.CTk):
         self.root = root
         self.config = ConfigManager()
-        self.is_downloading = False
+
+        self.queue_manager = DownloadQueueManager(
+            on_queue_updated=lambda items: self.root.after(0, lambda: self._render_queue(items)),
+            on_item_progress=self._update_progress_safe,
+            on_queue_finished=lambda: self.root.after(0, self._on_queue_finished),
+        )
 
         self._setup_window()
         self._build_ui()
@@ -45,9 +51,9 @@ class DownloaderApp:
         self.root.configure(fg_color=BG_MAIN)
         self._set_window_icon()
 
-        largura, altura = 640, 660
+        largura, altura = 660, 860
         x = (self.root.winfo_screenwidth() - largura) // 2
-        y = (self.root.winfo_screenheight() - altura) // 2
+        y = max(10, (self.root.winfo_screenheight() - altura) // 2)
         self.root.geometry(f"{largura}x{altura}+{x}+{y}")
         self.root.resizable(False, False)
 
@@ -62,7 +68,6 @@ class DownloaderApp:
                 pass
 
     def _build_ui(self):
-        # Moldura externa estilo tela retrô
         main_frame = ctk.CTkFrame(
             self.root,
             fg_color=BG_MAIN,
@@ -72,7 +77,7 @@ class DownloaderApp:
         )
         main_frame.pack(fill="both", expand=True, padx=12, pady=12)
 
-        # Cabeçalho Retrô com Botão de Alternar Tema
+        # Cabeçalho
         header = ctk.CTkFrame(
             main_frame,
             fg_color=PANEL_BG,
@@ -80,7 +85,7 @@ class DownloaderApp:
             border_width=2,
             border_color=BORDER_COLOR,
         )
-        header.pack(fill="x", padx=14, pady=(14, 12))
+        header.pack(fill="x", padx=14, pady=(12, 10))
 
         ctk.CTkLabel(
             header,
@@ -93,7 +98,7 @@ class DownloaderApp:
         self.btn_theme = ctk.CTkButton(
             header,
             text=theme_label,
-            font=("Consolas", 13, "bold"),
+            font=FONT_BTN,
             width=110,
             height=30,
             corner_radius=0,
@@ -106,7 +111,7 @@ class DownloaderApp:
         )
         self.btn_theme.pack(side="right", padx=10, pady=8)
 
-        # Seção: Input de URL + Botão Colar
+        # Input URL
         ctk.CTkLabel(
             main_frame,
             text="> INSIRA A URL DO VÍDEO OU PLAYLIST:",
@@ -115,7 +120,7 @@ class DownloaderApp:
         ).pack(anchor="w", padx=16)
 
         url_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
-        url_frame.pack(fill="x", padx=16, pady=(4, 14))
+        url_frame.pack(fill="x", padx=16, pady=(4, 10))
 
         self.entry_url = ctk.CTkEntry(
             url_frame,
@@ -126,7 +131,7 @@ class DownloaderApp:
             border_color=BORDER_COLOR,
             border_width=2,
             corner_radius=0,
-            height=36,
+            height=34,
             placeholder_text="https://youtube.com/watch?v=...",
         )
         self.entry_url.pack(side="left", fill="x", expand=True, padx=(0, 8))
@@ -135,8 +140,8 @@ class DownloaderApp:
             url_frame,
             text="COLAR",
             font=FONT_BTN,
-            width=82,
-            height=36,
+            width=80,
+            height=34,
             corner_radius=0,
             border_width=2,
             border_color=BORDER_COLOR,
@@ -146,7 +151,7 @@ class DownloaderApp:
             command=self._paste_url,
         ).pack(side="right")
 
-        # Seção: Opções (Formato, Qualidade e Playlist)
+        # Opções (Formato, Qualidade e Playlist)
         options_box = ctk.CTkFrame(
             main_frame,
             fg_color=PANEL_BG,
@@ -154,14 +159,12 @@ class DownloaderApp:
             border_color=BORDER_COLOR,
             corner_radius=0,
         )
-        options_box.pack(fill="x", padx=16, pady=(0, 14))
+        options_box.pack(fill="x", padx=16, pady=(0, 10))
 
-        # Linha 1: Formatos + Playlist
         row1 = ctk.CTkFrame(options_box, fg_color="transparent")
-        row1.pack(fill="x", padx=12, pady=(10, 8))
+        row1.pack(fill="x", padx=12, pady=(8, 6))
 
         self.format_var = ctk.StringVar(value="mp3")
-
         ctk.CTkLabel(row1, text="FORMATO:", font=FONT_LABEL, text_color=TEXT_MUTED).pack(side="left", padx=(0, 8))
 
         for texto, valor in [("MP3", "mp3"), ("WAV", "wav"), ("MP4", "mp4")]:
@@ -191,9 +194,8 @@ class DownloaderApp:
             corner_radius=0,
         ).pack(side="right")
 
-        # Linha 2: Seletor de Qualidade
         row2 = ctk.CTkFrame(options_box, fg_color="transparent")
-        row2.pack(fill="x", padx=12, pady=(0, 10))
+        row2.pack(fill="x", padx=12, pady=(0, 8))
 
         ctk.CTkLabel(row2, text="QUALIDADE:", font=FONT_LABEL, text_color=TEXT_MUTED).pack(side="left", padx=(0, 8))
 
@@ -212,14 +214,14 @@ class DownloaderApp:
             dropdown_fg_color=PANEL_BG,
             dropdown_text_color=TEXT_PRIMARY,
             dropdown_hover_color=ACCENT_PRIMARY,
-            width=210,
-            height=30,
+            width=200,
+            height=28,
         )
         self.quality_menu.pack(side="left")
 
-        # Seção: Pasta de Destino
+        # Pasta de Destino
         folder_box = ctk.CTkFrame(main_frame, fg_color="transparent")
-        folder_box.pack(fill="x", padx=16, pady=(0, 16))
+        folder_box.pack(fill="x", padx=16, pady=(0, 10))
 
         self.label_pasta = ctk.CTkLabel(
             folder_box,
@@ -233,9 +235,9 @@ class DownloaderApp:
         ctk.CTkButton(
             folder_box,
             text="ABRIR",
-            font=("Consolas", 13, "bold"),
-            width=75,
-            height=30,
+            font=FONT_BTN,
+            width=72,
+            height=28,
             corner_radius=0,
             border_width=2,
             border_color=BORDER_COLOR,
@@ -248,9 +250,9 @@ class DownloaderApp:
         ctk.CTkButton(
             folder_box,
             text="ALTERAR",
-            font=("Consolas", 13, "bold"),
-            width=90,
-            height=30,
+            font=FONT_BTN,
+            width=88,
+            height=28,
             corner_radius=0,
             border_width=2,
             border_color=BORDER_COLOR,
@@ -260,26 +262,26 @@ class DownloaderApp:
             command=self._select_folder,
         ).pack(side="right")
 
-        # Botão Principal Estilo Arcade Start
+        # Botão Adicionar à Fila
         self.btn_download = ctk.CTkButton(
             main_frame,
-            text="[ INICIAR DOWNLOAD ]",
-            font=("Consolas", 16, "bold"),
-            height=46,
+            text="[ + ADICIONAR À FILA ]",
+            font=("Consolas", 15, "bold"),
+            height=42,
             corner_radius=0,
             border_width=2,
             border_color=BORDER_COLOR,
             fg_color=ACCENT_PRIMARY,
             hover_color=ACCENT_HOVER,
             text_color=BTN_START_TEXT,
-            command=self._start_download,
+            command=self._enqueue_download,
         )
         self.btn_download.pack(fill="x", padx=16)
 
-        # Barra de Progresso Retrô
+        # Barra de Progresso do Item Atual
         self.progress = ctk.CTkProgressBar(
             main_frame,
-            height=18,
+            height=16,
             corner_radius=0,
             border_width=2,
             border_color=BORDER_COLOR,
@@ -287,27 +289,65 @@ class DownloaderApp:
             progress_color=ACCENT_SECONDARY,
         )
         self.progress.set(0)
-        self.progress.pack(fill="x", padx=16, pady=(16, 6))
+        self.progress.pack(fill="x", padx=16, pady=(12, 4))
 
         self.label_status = ctk.CTkLabel(
             main_frame,
-            text="STATUS: AGUARDANDO COMANDO...",
-            font=FONT_BODY,
+            text="STATUS: FILA VAZIA — AGUARDANDO COMANDO...",
+            font=FONT_SMALL,
             text_color=TEXT_PRIMARY,
             anchor="w",
         )
-        self.label_status.pack(fill="x", padx=16)
+        self.label_status.pack(fill="x", padx=16, pady=(0, 8))
 
-        # Imagem decorativa no rodapé (476x535 -> 178x200 proporcional)
+        # Cabeçalho da Fila + Botão Limpar
+        queue_header = ctk.CTkFrame(main_frame, fg_color="transparent")
+        queue_header.pack(fill="x", padx=16, pady=(2, 4))
+
+        self.label_queue_title = ctk.CTkLabel(
+            queue_header,
+            text="> FILA DE DOWNLOADS (0):",
+            font=FONT_LABEL,
+            text_color=TEXT_PRIMARY,
+        )
+        self.label_queue_title.pack(side="left")
+
+        ctk.CTkButton(
+            queue_header,
+            text="LIMPAR CONCLUÍDOS",
+            font=("Consolas", 11, "bold"),
+            width=145,
+            height=24,
+            corner_radius=0,
+            border_width=2,
+            border_color=BORDER_COLOR,
+            fg_color=PANEL_BG,
+            hover_color=ACCENT_PRIMARY,
+            text_color=TEXT_PRIMARY,
+            command=self.queue_manager.clear_completed,
+        ).pack(side="right")
+
+        # Lista Rolável da Fila
+        self.queue_list_frame = ctk.CTkScrollableFrame(
+            main_frame,
+            height=135,
+            fg_color=PANEL_BG,
+            border_width=2,
+            border_color=BORDER_COLOR,
+            corner_radius=0,
+        )
+        self.queue_list_frame.pack(fill="x", padx=16, pady=(0, 10))
+
+        # Mascote no rodapé (proporcional 142x160 para caber confortavelmente com a fila)
         asset_path = get_asset_path("mascote.png")
         if asset_path.exists():
             pil_image = Image.open(asset_path)
             retro_img = ctk.CTkImage(
                 light_image=pil_image,
                 dark_image=pil_image,
-                size=(178, 200),
+                size=(142, 160),
             )
-            ctk.CTkLabel(main_frame, text="", image=retro_img).pack(pady=(12, 8))
+            ctk.CTkLabel(main_frame, text="", image=retro_img).pack(pady=(2, 4))
 
     def _on_format_change(self):
         fmt = self.format_var.get()
@@ -357,61 +397,87 @@ class DownloaderApp:
             else:
                 subprocess.run(["xdg-open", pasta])
 
-    def _update_progress_safe(self, percent: float, text: str):
-        normalized = max(0.0, min(1.0, percent / 100.0))
-        self.root.after(0, lambda: self.progress.set(normalized))
-        self.root.after(0, lambda: self.label_status.configure(text=f"STATUS: {text}", text_color=TEXT_PRIMARY))
-
-    def _start_download(self):
-        if self.is_downloading:
-            return
-
+    def _enqueue_download(self):
         url = self.entry_url.get().strip()
         if not url:
-            messagebox.showwarning("AVISO", "Insira um link válido antes de iniciar!")
+            messagebox.showwarning("AVISO", "Insira um link válido antes de adicionar à fila!")
             return
-
-        self.is_downloading = True
-        self.btn_download.configure(state="disabled", text="[ PROCESSANDO... ]")
-        self.progress.set(0)
-        self.label_status.configure(text="STATUS: CONECTANDO AO SERVIDOR...", text_color=TEXT_MUTED)
-
-        thread = threading.Thread(target=self._download_worker, args=(url,), daemon=True)
-        thread.start()
-
-    def _download_worker(self, url: str):
-        downloader = MediaDownloader(
-            on_progress=self._update_progress_safe,
-            on_status=lambda msg: self.root.after(
-                0, lambda: self.label_status.configure(text=f"STATUS: {msg.upper()}", text_color=TEXT_MUTED)
-            ),
-        )
 
         raw_quality = self.quality_var.get()
         clean_quality = "best" if raw_quality == "Máxima" else raw_quality.replace(" kbps", "").replace("p", "")
 
-        try:
-            downloader.download(
-                url=url,
-                output_dir=self.config.download_dir,
-                media_format=self.format_var.get(),
-                quality=clean_quality,
-                allow_playlist=self.playlist_var.get(),
-            )
-            self.root.after(0, self._on_download_success)
-        except DownloadError as e:
-            self.root.after(0, lambda: self._on_download_error(str(e)))
-        finally:
-            self.is_downloading = False
-            self.root.after(0, lambda: self.btn_download.configure(state="normal", text="[ INICIAR DOWNLOAD ]"))
-
-    def _on_download_success(self):
-        self.progress.set(1.0)
-        self.label_status.configure(text="STATUS: DOWNLOAD CONCLUÍDO! [OK]", text_color=TEXT_PRIMARY)
+        self.queue_manager.add_item(
+            url=url,
+            output_dir=self.config.download_dir,
+            media_format=self.format_var.get(),
+            quality=clean_quality,
+            allow_playlist=self.playlist_var.get(),
+        )
         self.entry_url.delete(0, "end")
-        messagebox.showinfo("SUCESSO", "Mídia salva com sucesso na pasta de destino!")
 
-    def _on_download_error(self, error_msg: str):
-        self.progress.set(0)
-        self.label_status.configure(text="STATUS: FALHA NA OPERAÇÃO [ERRO]", text_color=ERROR_RED)
-        messagebox.showerror("ERRO", error_msg)
+    def _update_progress_safe(self, item_id: str, percent: float, text: str):
+        normalized = max(0.0, min(1.0, percent / 100.0))
+        self.root.after(0, lambda: self.progress.set(normalized))
+        self.root.after(
+            0,
+            lambda: self.label_status.configure(text=f"[{item_id}] {text}", text_color=TEXT_PRIMARY),
+        )
+
+    def _on_queue_finished(self):
+        self.progress.set(1.0)
+        self.label_status.configure(text="STATUS: TODOS OS ITENS DA FILA PROCESSADOS [OK]", text_color=SUCCESS_GREEN)
+
+    def _render_queue(self, items: list[QueueItem]):
+        self.label_queue_title.configure(text=f"> FILA DE DOWNLOADS ({len(items)}):")
+
+        for widget in self.queue_list_frame.winfo_children():
+            widget.destroy()
+
+        status_colors = {
+            "Aguardando": TEXT_MUTED,
+            "Baixando": ACCENT_SECONDARY,
+            "Concluído": SUCCESS_GREEN,
+            "Erro": ERROR_RED,
+        }
+
+        for item in items:
+            row = ctk.CTkFrame(
+                self.queue_list_frame,
+                fg_color=BG_MAIN,
+                border_width=1,
+                border_color=BORDER_COLOR,
+                corner_radius=0,
+            )
+            row.pack(fill="x", pady=3, padx=2)
+
+            short_url = item.url if len(item.url) <= 32 else f"{item.url[:29]}..."
+            info_text = f"[{item.media_format.upper()}] {short_url}"
+
+            ctk.CTkLabel(
+                row,
+                text=info_text,
+                font=FONT_SMALL,
+                text_color=TEXT_PRIMARY,
+                anchor="w",
+            ).pack(side="left", padx=8, pady=4, fill="x", expand=True)
+
+            ctk.CTkLabel(
+                row,
+                text=item.status.upper(),
+                font=("Consolas", 11, "bold"),
+                text_color=status_colors.get(item.status, TEXT_PRIMARY),
+            ).pack(side="left", padx=6)
+
+            if item.status != "Baixando":
+                ctk.CTkButton(
+                    row,
+                    text="X",
+                    font=("Consolas", 11, "bold"),
+                    width=26,
+                    height=22,
+                    corner_radius=0,
+                    fg_color=PANEL_BG,
+                    hover_color=ERROR_RED,
+                    text_color=TEXT_PRIMARY,
+                    command=lambda i_id=item.id: self.queue_manager.remove_item(i_id),
+                ).pack(side="right", padx=4, pady=3)
